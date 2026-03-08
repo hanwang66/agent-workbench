@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Translate Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="bg-grid" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="hero">
+        <p class="kicker">Ollama Powered</p>
+        <h1>Translate Agent</h1>
+        <p class="subtitle">输入任意文本，调用本地 qwen2.5:3b 模型实时翻译。</p>
+      </header>
+
+      <section class="panel" aria-label="translate form">
+        <div class="lang-row">
+          <label>
+            源语言
+            <input id="sourceLang" type="text" value="Chinese" />
+          </label>
+          <button id="swapBtn" type="button" class="swap" title="交换语言">⇄</button>
+          <label>
+            目标语言
+            <input id="targetLang" type="text" value="English" />
+          </label>
+        </div>
+
+        <label class="block" for="sourceText">待翻译文本</label>
+        <textarea id="sourceText" rows="7" placeholder="例如：你好，世界"></textarea>
+
+        <div class="meta-grid">
+          <label>
+            会话 ID
+            <input id="sessionId" type="text" placeholder="留空自动创建" />
+          </label>
+          <label>
+            风格
+            <input id="style" type="text" value="neutral" placeholder="neutral / formal / casual" />
+          </label>
+          <label>
+            领域
+            <input id="domain" type="text" value="general" placeholder="general / technical / legal" />
+          </label>
+          <label>
+            RAG Top K
+            <input id="ragTopK" type="number" min="1" max="8" value="3" />
+          </label>
+          <label>
+            检索模式
+            <select id="retrievalMode">
+              <option value="hybrid" selected>hybrid</option>
+              <option value="vector">vector</option>
+              <option value="bm25">bm25</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check-row">
+          <input id="useRag" type="checkbox" />
+          翻译时启用 RAG 知识检索
+        </label>
+
+        <label class="block" for="glossaryText">术语表 (每行: 原词=目标词)</label>
+        <textarea id="glossaryText" rows="4" placeholder="AI=Artificial Intelligence&#10;大模型=Large Language Model"></textarea>
+
+        <label class="block" for="ragTitle">RAG 文档标题</label>
+        <input id="ragTitle" type="text" placeholder="例如：产品术语手册" />
+        <label class="block" for="ragText">RAG 文档内容</label>
+        <textarea id="ragText" rows="5" placeholder="粘贴需要被检索的背景知识，点击入库。"></textarea>
+        <label class="block" for="ragFile">上传文档 (txt/md/csv/json 等文本文件)</label>
+        <input id="ragFile" type="file" accept=".txt,.md,.markdown,.csv,.json,.log,.text,.yaml,.yml,.ini,.cfg,.conf" />
+
+        <div class="actions">
+          <button id="translateBtn" type="button">开始翻译</button>
+          <button id="ingestRagBtn" type="button" class="secondary">入库 RAG 文档</button>
+          <button id="uploadRagBtn" type="button" class="secondary">上传并入库</button>
+          <button id="refreshRagBtn" type="button" class="secondary">刷新 RAG 文档</button>
+          <button id="clearRagBtn" type="button" class="secondary">清空 RAG 文档</button>
+          <button id="clearSessionBtn" type="button" class="secondary">清空会话记忆</button>
+          <span id="status" aria-live="polite"></span>
+        </div>
+
+        <label class="block" for="ragDocs">RAG 文档列表</label>
+        <textarea id="ragDocs" rows="4" readonly placeholder="当前还没有 RAG 文档"></textarea>
+
+        <div class="rag-result-grid">
+          <label>
+            本次启用 RAG
+            <input id="ragEnabledView" type="text" readonly value="false" />
+          </label>
+          <label>
+            本次 RAG Top K
+            <input id="ragTopKView" type="text" readonly value="-" />
+          </label>
+          <label>
+            本次检索模式
+            <input id="retrievalModeView" type="text" readonly value="-" />
+          </label>
+          <label>
+            RAG 是否命中
+            <input id="ragUsedView" type="text" readonly value="false" />
+          </label>
+        </div>
+        <label class="block" for="ragChunksView">命中分块 (rag_chunks)</label>
+        <textarea id="ragChunksView" rows="3" readonly placeholder="暂无命中"></textarea>
+
+        <label class="block" for="resultText">翻译结果</label>
+        <textarea id="resultText" rows="7" readonly placeholder="翻译结果会显示在这里"></textarea>
+
+        <p class="block history-title">最近 10 次请求的 RAG 命中历史</p>
+        <div class="history-wrap">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>请求摘要</th>
+                <th>mode</th>
+                <th>use_rag</th>
+                <th>top_k</th>
+                <th>rag_used</th>
+                <th>rag_chunks</th>
+              </tr>
+            </thead>
+            <tbody id="ragHistoryBody">
+              <tr>
+                <td colspan="7">暂无请求记录</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

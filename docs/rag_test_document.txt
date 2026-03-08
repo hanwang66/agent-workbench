@@ -1,0 +1,38 @@
+RAG Test Document: Translation Terminology Handbook
+Version: 1.0
+
+Purpose:
+This document provides preferred translations for technical terms used in AI and translation products.
+
+Preferred Term Mappings:
+1) 大模型 => Large Language Model
+2) 上下文窗口 => context window
+3) 推理 => inference
+4) 向量数据库 => vector database
+5) 检索增强生成 => Retrieval-Augmented Generation
+6) 术语一致性 => terminology consistency
+7) 提示词 => prompt
+8) 分块 => chunking
+9) 嵌入模型 => embedding model
+10) 本地部署 => local deployment
+
+Style Rules:
+- Keep product names in English.
+- Translate UI terms in concise English.
+- Preserve punctuation when possible.
+- Prefer "context window" over "context length".
+
+Example Sentences:
+- 该系统支持大模型的本地部署。
+  Preferred translation: The system supports local deployment of large language models.
+
+- 为了提高术语一致性，我们使用检索增强生成。
+  Preferred translation: To improve terminology consistency, we use Retrieval-Augmented Generation.
+
+- 这个模型的上下文窗口比较大，适合长文档翻译。
+  Preferred translation: This model has a large context window and is suitable for long-document translation.
+
+Short Domain Notes:
+- In technical docs, "推理" should usually be translated as "inference".
+- In product docs, "分块" can be translated as "chunking".
+- In platform docs, "向量数据库" should be translated as "vector database".
