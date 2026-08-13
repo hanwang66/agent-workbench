@@ -43,6 +43,8 @@ ollama_client = OllamaClient(
 translation_service = TranslationService(
     client=ollama_client,
     max_session_turns=settings.max_session_turns,
+    max_sessions=settings.max_sessions,
+    session_ttl_seconds=settings.session_ttl_seconds,
     rag_embed_model=settings.ollama_embed_model,
     rag_chunk_size=settings.rag_chunk_size,
     rag_chunk_overlap=settings.rag_chunk_overlap,
@@ -101,6 +103,31 @@ def validate_upload(file: UploadFile, content: bytes) -> None:
             code="FILE_TYPE_UNSUPPORTED",
             message=f"Unsupported content type '{content_type}'",
         )
+
+
+async def read_upload_with_limit(file: UploadFile) -> bytes:
+    """Read an upload incrementally so oversized files are rejected early."""
+    limit = settings.max_upload_size_bytes
+    parts: list[bytes] = []
+    total = 0
+
+    while True:
+        # Read at most one byte beyond the configured limit so the check does
+        # not require buffering an arbitrarily large multipart upload.
+        read_size = min(64 * 1024, max(1, limit - total + 1))
+        chunk = await file.read(read_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            raise ApiError(
+                status_code=413,
+                code="FILE_TOO_LARGE",
+                message=f"Upload exceeds limit ({limit} bytes)",
+            )
+        parts.append(chunk)
+
+    return b"".join(parts)
 
 
 @app.exception_handler(ApiError)
@@ -271,9 +298,12 @@ async def upload_rag_document(
     created_at: str = Form(default=""),
 ) -> RagIngestResponse:
     try:
-        content = await file.read()
+        content = await read_upload_with_limit(file)
         validate_upload(file=file, content=content)
-        text = decode_uploaded_text(content).strip()
+        try:
+            text = decode_uploaded_text(content).strip()
+        except ValueError as exc:
+            raise ApiError(status_code=400, code="FILE_ENCODING_UNSUPPORTED", message=str(exc)) from exc
         if not text:
             raise ApiError(status_code=400, code="FILE_EMPTY", message="Uploaded file is empty")
 
@@ -292,8 +322,6 @@ async def upload_rag_document(
         )
         docs = translation_service.list_rag_documents(filters={"doc_id": doc_id})
         doc_info = docs[0] if docs else {}
-    except ValueError as exc:
-        raise ApiError(status_code=400, code="FILE_ENCODING_UNSUPPORTED", message=str(exc)) from exc
     except httpx.TimeoutException as exc:
         raise ApiError(status_code=504, code="EMBEDDING_TIMEOUT", message=f"Embedding request timed out: {exc}") from exc
     except httpx.HTTPStatusError as exc:
@@ -303,6 +331,8 @@ async def upload_rag_document(
         raise ApiError(status_code=502, code="EMBEDDING_UNREACHABLE", message=f"Cannot reach Ollama embeddings: {exc}") from exc
     except ApiError:
         raise
+    except ValueError as exc:
+        raise ApiError(status_code=400, code="RAG_INGEST_INVALID_INPUT", message=str(exc)) from exc
     except Exception as exc:
         raise ApiError(status_code=500, code="RAG_UPLOAD_FAILED", message=f"RAG upload failed: {exc}") from exc
 

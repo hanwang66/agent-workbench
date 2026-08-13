@@ -168,6 +168,8 @@ Edit `.env`:
 - `OLLAMA_MAX_RETRIES` default `2`
 - `OLLAMA_RETRY_BACKOFF_SECONDS` default `0.5`
 - `MAX_SESSION_TURNS` default `6`
+- `MAX_SESSIONS` default `10000` (maximum in-memory sessions)
+- `SESSION_TTL_SECONDS` default `3600` (inactive session expiry; `0` disables TTL)
 - `RAG_CHUNK_SIZE` default `500`
 - `RAG_CHUNK_OVERLAP` default `80`
 - `RAG_BACKEND` default `chroma` (`chroma` or `local_json`)

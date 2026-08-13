@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     ollama_max_retries: int = 2
     ollama_retry_backoff_seconds: float = 0.5
     max_session_turns: int = 6
+    max_sessions: int = 10000
+    session_ttl_seconds: int = 3600
     rag_chunk_size: int = 500
     rag_chunk_overlap: int = 80
     rag_backend: str = "chroma"

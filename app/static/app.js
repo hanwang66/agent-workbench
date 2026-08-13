@@ -35,6 +35,10 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+function getErrorMessage(data, fallback) {
+  return data?.error?.message || data?.detail || data?.message || fallback;
+}
+
 function resetRagViews() {
   ragEnabledViewEl.value = "false";
   ragTopKViewEl.value = "-";
@@ -139,7 +143,7 @@ async function translate() {
 
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "翻译失败");
+      throw new Error(getErrorMessage(data, "翻译失败"));
     }
 
     resultTextEl.value = data.translated_text || "";
@@ -183,7 +187,7 @@ async function refreshRagDocs() {
     const response = await fetch("/rag/documents");
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "获取 RAG 文档失败");
+      throw new Error(getErrorMessage(data, "获取 RAG 文档失败"));
     }
 
     if (!Array.isArray(data) || data.length === 0) {
@@ -219,7 +223,7 @@ async function ingestRagDocument() {
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "RAG 入库失败");
+      throw new Error(getErrorMessage(data, "RAG 入库失败"));
     }
 
     setStatus(`RAG 入库完成: ${data.title} (${data.chunks} chunks)`);
@@ -254,7 +258,7 @@ async function uploadRagDocument() {
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "文档上传失败");
+      throw new Error(getErrorMessage(data, "文档上传失败"));
     }
 
     setStatus(`上传入库完成: ${data.title} (${data.chunks} chunks)`);
@@ -273,7 +277,7 @@ async function clearRagDocuments() {
     const response = await fetch("/rag/documents", { method: "DELETE" });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "清空 RAG 文档失败");
+      throw new Error(getErrorMessage(data, "清空 RAG 文档失败"));
     }
 
     setStatus(`已清空 RAG 文档: ${data.deleted_documents}`);
@@ -299,7 +303,7 @@ async function clearSession() {
     });
     const data = await response.json();
     if (!response.ok) {
-      throw new Error(data.detail || "清理会话失败");
+      throw new Error(getErrorMessage(data, "清理会话失败"));
     }
     setStatus(data.cleared ? "会话记忆已清空" : "会话不存在，已无记忆");
   } catch (error) {
