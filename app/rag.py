@@ -4,13 +4,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from math import sqrt
+import os
 from pathlib import Path
+import re
+import tempfile
 from threading import Lock
 from typing import Any, List, Optional, Protocol
 from uuid import uuid4
-
-import chromadb
-
 
 @dataclass
 class RagChunk:
@@ -48,7 +48,9 @@ def normalize_tags(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     if isinstance(value, str):
-        return [item.strip() for item in value.split(",") if item.strip()]
+        # `|` was used by older Chroma records; keep it readable while using
+        # comma-separated values for new records.
+        return [item.strip() for item in re.split(r"[,|]", value) if item.strip()]
     return []
 
 
@@ -231,7 +233,21 @@ class LocalJsonRagStore:
                 for chunk in self._chunks
             ]
         }
-        self._store_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
+        fd, temp_path = tempfile.mkstemp(
+            dir=self._store_path.parent,
+            prefix=f".{self._store_path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_path, self._store_path)
+        finally:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
 
     def add_document(
         self,
@@ -295,10 +311,14 @@ class LocalJsonRagStore:
     def delete_document(self, doc_id: str, filters: Optional[dict[str, object]] = None) -> bool:
         with self._lock:
             original = len(self._chunks)
+            matches_document = any(
+                chunk.doc_id == doc_id and chunk_matches_filters(chunk, filters)
+                for chunk in self._chunks
+            )
             self._chunks = [
                 chunk
                 for chunk in self._chunks
-                if not (chunk.doc_id == doc_id and chunk_matches_filters(chunk, filters))
+                if not (matches_document and chunk.doc_id == doc_id)
             ]
             changed = len(self._chunks) != original
             if changed:
@@ -313,9 +333,11 @@ class LocalJsonRagStore:
                 self._save_to_disk()
                 return doc_count
 
-            removable = [chunk for chunk in self._chunks if chunk_matches_filters(chunk, filters)]
-            doc_count = len({chunk.doc_id for chunk in removable})
-            self._chunks = [chunk for chunk in self._chunks if not chunk_matches_filters(chunk, filters)]
+            matching_doc_ids = {
+                chunk.doc_id for chunk in self._chunks if chunk_matches_filters(chunk, filters)
+            }
+            doc_count = len(matching_doc_ids)
+            self._chunks = [chunk for chunk in self._chunks if chunk.doc_id not in matching_doc_ids]
             self._save_to_disk()
             return doc_count
 
@@ -350,6 +372,8 @@ class LocalJsonRagStore:
 
 class ChromaRagStore:
     def __init__(self, persist_directory: str, collection_name: str) -> None:
+        import chromadb
+
         path = Path(persist_directory)
         path.mkdir(parents=True, exist_ok=True)
         self._client = chromadb.PersistentClient(path=str(path))
@@ -379,7 +403,7 @@ class ChromaRagStore:
                 "chunk_hash": str(raw_metadata.get("chunk_hashes", [""] * len(chunk_texts))[index]),
                 "source": str(normalized["source"]),
                 "language": str(normalized["language"]),
-                "tags": "|".join(list(normalized["tags"])),
+                "tags": ",".join(list(normalized["tags"])),
                 "created_at": str(normalized["created_at"]),
             }
             for index in range(len(chunk_texts))
@@ -440,13 +464,20 @@ class ChromaRagStore:
         return list(summary.values())
 
     def delete_document(self, doc_id: str, filters: Optional[dict[str, object]] = None) -> bool:
-        where: dict[str, object] = {"doc_id": doc_id}
-        kb_filter = str((filters or {}).get("knowledge_base_id") or "").strip()
-        if kb_filter:
-            where["knowledge_base_id"] = kb_filter
-
-        result = self._collection.get(where=where, include=[])
-        ids = result.get("ids") or []
+        result = self._collection.get(include=["metadatas"])
+        matching_doc_ids = {
+            str(metadata.get("doc_id", ""))
+            for metadata in result.get("metadatas") or []
+            if isinstance(metadata, dict)
+            and str(metadata.get("doc_id", "")) == doc_id
+            and chunk_matches_filters(self._chunk_from_metadata(metadata), filters)
+        }
+        ids = [
+            item_id
+            for item_id, metadata in zip(result.get("ids") or [], result.get("metadatas") or [])
+            if isinstance(metadata, dict)
+            and str(metadata.get("doc_id", "")) in matching_doc_ids
+        ]
         if not ids:
             return False
 
@@ -454,26 +485,43 @@ class ChromaRagStore:
         return True
 
     def clear_all(self, filters: Optional[dict[str, object]] = None) -> int:
-        docs = self.list_documents(filters=filters)
-        deleted_documents = len(docs)
-        if deleted_documents == 0:
+        result = self._collection.get(include=["metadatas"])
+        matching_doc_ids = {
+            self._chunk_from_metadata(metadata).doc_id
+            for metadata in result.get("metadatas") or []
+            if isinstance(metadata, dict) and chunk_matches_filters(self._chunk_from_metadata(metadata), filters)
+        }
+        if not matching_doc_ids:
             return 0
 
-        if filters and str(filters.get("knowledge_base_id") or "").strip():
-            ids_result = self._collection.get(where={"knowledge_base_id": str(filters["knowledge_base_id"])}, include=[])
-        else:
-            ids_result = self._collection.get(include=[])
-        ids = ids_result.get("ids") or []
+        ids = [
+            item_id
+            for item_id, metadata in zip(result.get("ids") or [], result.get("metadatas") or [])
+            if isinstance(metadata, dict) and str(metadata.get("doc_id", "")) in matching_doc_ids
+        ]
         if ids:
             self._collection.delete(ids=ids)
-        return deleted_documents
+        return len(matching_doc_ids)
 
     def search(self, query_embedding: list[float], top_k: int, filters: Optional[dict[str, object]] = None) -> list[RagMatch]:
-        result = self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=max(top_k * 8, top_k),
-            include=["documents", "metadatas", "distances"],
-        )
+        collection_count = self._collection.count()
+        if collection_count <= 0:
+            return []
+
+        # When filters are present, retrieve all eligible candidates before
+        # applying tag filtering in Python; a fixed 8x window can otherwise
+        # discard valid matches that happen to rank below unrelated chunks.
+        candidate_count = collection_count if filters else min(max(top_k * 8, top_k), collection_count)
+        query_kwargs: dict[str, object] = {
+            "query_embeddings": [query_embedding],
+            "n_results": candidate_count,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        where = self._build_where(filters)
+        if where:
+            query_kwargs["where"] = where
+
+        result = self._collection.query(**query_kwargs)
 
         documents_group = result.get("documents") or [[]]
         metadatas_group = result.get("metadatas") or [[]]
@@ -522,6 +570,42 @@ class ChromaRagStore:
                 matches.append(match)
 
         return matches[:top_k]
+
+    @staticmethod
+    def _chunk_from_metadata(metadata: dict[str, object]) -> RagChunk:
+        return RagChunk(
+            doc_id=str(metadata.get("doc_id", "")),
+            title=str(metadata.get("title", "Untitled")),
+            chunk_id=int(metadata.get("chunk_id", 0)),
+            text="",
+            embedding=[],
+            knowledge_base_id=str(metadata.get("knowledge_base_id", "default")),
+            doc_hash=str(metadata.get("doc_hash", "")),
+            chunk_hash=str(metadata.get("chunk_hash", "")),
+            source=str(metadata.get("source", "manual")),
+            tags=normalize_tags(metadata.get("tags", "")),
+            language=str(metadata.get("language", "unknown")),
+            created_at=str(metadata.get("created_at", "")),
+        )
+
+    @staticmethod
+    def _build_where(filters: Optional[dict[str, object]]) -> dict[str, object] | None:
+        if not filters:
+            return None
+
+        conditions: list[dict[str, object]] = []
+        # Keep case-insensitive source/language matching in Python. Applying
+        # those fields to Chroma's case-sensitive `where` would reject legacy
+        # records whose metadata uses different casing.
+        for field in ("knowledge_base_id", "doc_hash"):
+            value = str(filters.get(field) or "").strip()
+            if value:
+                conditions.append({field: value})
+        if not conditions:
+            return None
+        if len(conditions) == 1:
+            return conditions[0]
+        return {"$and": conditions}
 
     def list_chunks(self, filters: Optional[dict[str, object]] = None) -> list[RagChunk]:
         result = self._collection.get(include=["documents", "metadatas"])

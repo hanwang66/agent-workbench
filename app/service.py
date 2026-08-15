@@ -7,6 +7,7 @@ import json
 import logging
 from math import log
 import re
+import time
 from threading import Lock
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -81,6 +82,8 @@ class TranslationService:
         self,
         client: OllamaClient,
         max_session_turns: int = 6,
+        max_sessions: int = 10000,
+        session_ttl_seconds: int = 3600,
         rag_embed_model: str = "nomic-embed-text",
         rag_chunk_size: int = 500,
         rag_chunk_overlap: int = 80,
@@ -98,7 +101,9 @@ class TranslationService:
         function_call_allowed_tools: str = "get_rag_context",
     ) -> None:
         self._client = client
-        self._max_session_turns = max_session_turns
+        self._max_session_turns = max(1, max_session_turns)
+        self._max_sessions = max(1, max_sessions)
+        self._session_ttl_seconds = max(0, session_ttl_seconds)
         self._rag_embed_model = rag_embed_model
         self._rag_chunk_size = rag_chunk_size
         self._rag_chunk_overlap = rag_chunk_overlap
@@ -115,6 +120,7 @@ class TranslationService:
         if not self._function_call_allowed_tools:
             self._function_call_allowed_tools = {"get_rag_context"}
         self._session_memory: Dict[str, List[TranslationTurn]] = defaultdict(list)
+        self._session_last_access: Dict[str, float] = {}
         self._lock = Lock()
         self._rag_store = create_rag_store(
             backend=rag_backend,
@@ -141,7 +147,10 @@ class TranslationService:
     ) -> tuple[str, str, int, bool, list[str], list[dict[str, object]]]:
         active_session_id = session_id or str(uuid4())
         history = self.get_session_memory(active_session_id)
-        base_filters = {"knowledge_base_id": knowledge_base_id, **(rag_filter or {})}
+        # The request's knowledge base is the security boundary. Never let a
+        # nested filter override it and accidentally expose another project.
+        base_filters = dict(rag_filter or {})
+        base_filters["knowledge_base_id"] = str(knowledge_base_id).strip() or "default"
         tool_traces: list[dict[str, object]] = []
 
         if use_function_calling:
@@ -506,6 +515,13 @@ class TranslationService:
                     chunk_id=match.chunk_id,
                     text=match.text,
                     score=score,
+                    knowledge_base_id=match.knowledge_base_id,
+                    doc_hash=match.doc_hash,
+                    chunk_hash=match.chunk_hash,
+                    source=match.source,
+                    tags=match.tags,
+                    language=match.language,
+                    created_at=match.created_at,
                 )
             )
 
@@ -575,25 +591,61 @@ class TranslationService:
 
     def append_turn(self, session_id: str, source_text: str, translated_text: str) -> int:
         with self._lock:
+            now = time.monotonic()
+            self._prune_expired_sessions_locked(now)
+            if session_id not in self._session_memory and len(self._session_memory) >= self._max_sessions:
+                oldest_session = min(
+                    self._session_last_access,
+                    key=self._session_last_access.get,
+                    default=None,
+                )
+                if oldest_session is not None:
+                    self._session_memory.pop(oldest_session, None)
+                    self._session_last_access.pop(oldest_session, None)
+
             turns = self._session_memory[session_id]
             turns.append(TranslationTurn(source_text=source_text, translated_text=translated_text))
             if len(turns) > self._max_session_turns:
                 self._session_memory[session_id] = turns[-self._max_session_turns :]
+            self._session_last_access[session_id] = now
             return len(self._session_memory[session_id])
 
     def get_session_memory(self, session_id: str) -> List[TranslationTurn]:
         with self._lock:
-            return list(self._session_memory.get(session_id, []))
+            now = time.monotonic()
+            self._prune_expired_sessions_locked(now)
+            turns = self._session_memory.get(session_id, [])
+            if turns:
+                self._session_last_access[session_id] = now
+            return list(turns)
 
     def get_session_turn_count(self, session_id: str) -> int:
         with self._lock:
-            return len(self._session_memory.get(session_id, []))
+            now = time.monotonic()
+            self._prune_expired_sessions_locked(now)
+            turns = self._session_memory.get(session_id, [])
+            if turns:
+                self._session_last_access[session_id] = now
+            return len(turns)
 
     def clear_session(self, session_id: str) -> bool:
         with self._lock:
             existed = session_id in self._session_memory
             self._session_memory.pop(session_id, None)
+            self._session_last_access.pop(session_id, None)
             return existed
+
+    def _prune_expired_sessions_locked(self, now: float) -> None:
+        if self._session_ttl_seconds <= 0:
+            return
+        expired = [
+            session_id
+            for session_id, last_access in self._session_last_access.items()
+            if now - last_access >= self._session_ttl_seconds
+        ]
+        for session_id in expired:
+            self._session_memory.pop(session_id, None)
+            self._session_last_access.pop(session_id, None)
 
     async def check_readiness(self) -> tuple[bool, bool, list[str]]:
         available_models = await self._client.list_models()

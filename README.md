@@ -39,6 +39,61 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 Open docs: `http://127.0.0.1:8000/docs`
 Open web UI: `http://127.0.0.1:8000`
 
+## 3.1 Agent Orchestrator
+
+The project exposes a centralized orchestrator while keeping the original
+`/translate` endpoint backward-compatible:
+
+- `GET /agents`: list registered worker agents and capabilities.
+- `POST /agent/run`: route a task to a registered worker.
+- `GET /agent/tasks/{task_id}`: inspect the in-memory orchestration state.
+- `POST /translate`: compatibility endpoint backed by `TranslationAgent`.
+
+The built-in `CodingAgent` is read-only by default. It can list and search
+files, read text, inspect `git diff`, and run the fixed unittest/diff checks.
+File writes are exposed only when the caller explicitly supplies
+`parameters.write_approved=true`; the workspace is constrained by
+`CODING_WORKSPACE_ROOT`.
+
+Example:
+
+```json
+{
+  "task": "Translate this release note into Chinese",
+  "agent_type": "translation",
+  "parameters": {
+    "source_lang": "English",
+    "target_lang": "Chinese",
+    "use_rag": true
+  }
+}
+```
+
+The current release includes `TranslationAgent`. New workers should implement
+the shared Agent interface and be registered in `AgentRegistry`; this keeps
+worker-specific tools and context isolated from the orchestrator.
+
+For an explicit multi-step plan, pass `parameters.plan`:
+
+```json
+{
+  "task": "Inspect and translate the result",
+  "parameters": {
+    "plan": [
+      {"agent_type": "coding", "task": "Inspect the repository", "parameters": {}},
+      {"agent_type": "translation", "task": "Translate the inspection summary", "parameters": {}}
+    ]
+  }
+}
+```
+
+When a later step is a `TranslationAgent`, preceding worker output is included
+by default. Set `include_previous_results` to `false` on that step to keep it
+independent.
+
+The initial state store is in memory. It is intentionally behind `TaskStateStore`
+so a later release can use SQLite or PostgreSQL for resumable execution.
+
 ## 4. Test Translation
 
 ```powershell
@@ -168,6 +223,8 @@ Edit `.env`:
 - `OLLAMA_MAX_RETRIES` default `2`
 - `OLLAMA_RETRY_BACKOFF_SECONDS` default `0.5`
 - `MAX_SESSION_TURNS` default `6`
+- `MAX_SESSIONS` default `10000` (maximum in-memory sessions)
+- `SESSION_TTL_SECONDS` default `3600` (inactive session expiry; `0` disables TTL)
 - `RAG_CHUNK_SIZE` default `500`
 - `RAG_CHUNK_OVERLAP` default `80`
 - `RAG_BACKEND` default `chroma` (`chroma` or `local_json`)

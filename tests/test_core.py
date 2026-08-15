@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pydantic import ValidationError
 
-from app.rag import RagChunk, chunk_matches_filters, split_text
+from app.rag import RagChunk, chunk_matches_filters, normalize_tags, split_text
 from app.schemas import TranslateRequest
 from app.service import TranslationTurn, TranslationService, build_translation_prompt
 
@@ -142,6 +142,75 @@ class CoreTests(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             TranslateRequest(text="hi", retrieval_mode="invalid")
+
+    def test_rag_filter_cannot_override_knowledge_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = TranslationService(
+                client=FakeClient(),
+                rag_backend="local_json",
+                rag_store_path=f"{tmp}/rag_store.json",
+            )
+            service._rag_store = FakeRagStore(
+                chunks=[
+                    RagChunk(
+                        doc_id="team-a-doc",
+                        title="Team A",
+                        chunk_id=0,
+                        text="model context for team a",
+                        embedding=[],
+                        knowledge_base_id="team-a",
+                    ),
+                    RagChunk(
+                        doc_id="team-b-doc",
+                        title="Team B",
+                        chunk_id=0,
+                        text="model context for team b",
+                        embedding=[],
+                        knowledge_base_id="team-b",
+                    ),
+                ]
+            )
+
+            _, _, _, rag_used, rag_chunks, _ = asyncio.run(
+                service.translate(
+                    text="model context",
+                    source_lang="English",
+                    target_lang="Chinese",
+                    style="neutral",
+                    domain="general",
+                    glossary={},
+                    use_rag=True,
+                    use_function_calling=False,
+                    rag_top_k=2,
+                    retrieval_mode="bm25",
+                    rag_filter={"knowledge_base_id": "team-b"},
+                    knowledge_base_id="team-a",
+                )
+            )
+
+            self.assertTrue(rag_used)
+            self.assertEqual(rag_chunks, ["Team A#0"])
+
+    def test_legacy_pipe_separated_tags_are_read(self) -> None:
+        self.assertEqual(normalize_tags("terminology|nlp"), ["terminology", "nlp"])
+
+    def test_session_count_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            service = TranslationService(
+                client=FakeClient(),
+                rag_backend="local_json",
+                rag_store_path=f"{tmp}/rag_store.json",
+                max_sessions=2,
+                session_ttl_seconds=0,
+            )
+
+            service.append_turn("session-a", "a", "A")
+            service.append_turn("session-b", "b", "B")
+            service.append_turn("session-c", "c", "C")
+
+            self.assertEqual(service.get_session_turn_count("session-a"), 0)
+            self.assertEqual(service.get_session_turn_count("session-b"), 1)
+            self.assertEqual(service.get_session_turn_count("session-c"), 1)
 
     def test_bm25_retrieve_matches_best_chunk(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
