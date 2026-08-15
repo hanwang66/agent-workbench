@@ -42,7 +42,7 @@ from .schemas import (
 )
 from .service import TranslationService
 
-app = FastAPI(title="Ollama Translation Agent", version="0.1.0")
+app = FastAPI(title="Agent Workbench", version="0.1.0")
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

@@ -1,6 +1,8 @@
-# FastAPI Translation Agent (Ollama)
+# Agent Workbench
 
-A lightweight translation agent using `FastAPI` and local `Ollama` model (default: `qwen2.5:3b`).
+A centralized multi-agent workbench using `FastAPI` and a local `Ollama` model
+(default: `qwen2.5:3b`). Translation and coding are built-in workers, and new
+specialized agents can be registered without coupling them to one another.
 
 ## Features
 
@@ -8,6 +10,7 @@ A lightweight translation agent using `FastAPI` and local `Ollama` model (defaul
 - Style and domain control (`neutral`, `formal`, `technical`, etc.)
 - Glossary control (`source_term=target_term`)
 - RAG knowledge base with pluggable storage (`chroma` or `local_json`)
+- Centralized Orchestrator with TranslationAgent and CodingAgent workers
 - Web UI + API endpoints
 
 ## 1. Prerequisites
