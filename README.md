@@ -13,6 +13,39 @@ specialized agents can be registered without coupling them to one another.
 - Centralized Orchestrator with TranslationAgent and CodingAgent workers
 - Web UI + API endpoints
 
+## Architecture
+
+The system follows a centralized Orchestrator pattern: the API submits a task
+to the Orchestrator, the Orchestrator routes it through the AgentRegistry, and
+specialized workers execute their own domain tools. Workers do not call one
+another directly; later workers receive prior results through `AgentContext`.
+
+```mermaid
+flowchart LR
+    Client[Web UI / curl / API client] --> API[FastAPI API]
+    API --> Orchestrator[Orchestrator]
+
+    Orchestrator --> Registry[AgentRegistry]
+    Orchestrator --> State[TaskStateStore]
+    Registry --> Translation[TranslationAgent]
+    Registry --> Coding[CodingAgent]
+
+    Translation --> Service[TranslationService]
+    Translation -. previous results .-> Context[AgentContext]
+    Coding -. previous results .-> Context
+    Orchestrator --> Context
+
+    Service --> Memory[Session memory]
+    Service --> RAG[RAG store]
+    Service --> Ollama[OllamaClient]
+    RAG --> Chroma[(Chroma)]
+    RAG --> LocalJSON[(Local JSON)]
+    Ollama --> Models[Ollama models]
+
+    Coding --> Tools[Bounded repository tools]
+    Tools --> Workspace[Configured workspace]
+```
+
 ## 1. Prerequisites
 
 - Python 3.10+
@@ -24,7 +57,7 @@ ollama pull qwen2.5:3b
 ollama pull nomic-embed-text
 ```
 
-## 2. Setup
+## 2. Local setup (Windows)
 
 ```powershell
 python -m venv .venv
@@ -33,7 +66,140 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-## 3. Run API
+## 3. Linux deployment
+
+The following example targets Ubuntu/Debian and installs the service under
+`/opt/agent-workbench`. It uses a dedicated system user, a Python virtual
+environment, local Ollama, and systemd.
+
+### 3.1 Install OS dependencies
+
+```bash
+sudo apt update
+sudo apt install -y git curl python3 python3-venv python3-pip
+```
+
+### 3.2 Install and prepare Ollama
+
+Install Ollama using its official installer if it is not already installed:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl enable --now ollama
+ollama pull qwen2.5:3b
+ollama pull nomic-embed-text
+```
+
+Keep Ollama bound to localhost unless you explicitly need remote model access.
+Do not expose port `11434` directly to the public internet.
+
+### 3.3 Install Agent Workbench
+
+```bash
+if ! id -u agentworkbench >/dev/null 2>&1; then
+  sudo useradd --system --home-dir /opt/agent-workbench \
+    --shell /usr/sbin/nologin agentworkbench
+fi
+
+sudo git clone https://github.com/hanwang66/agent-workbench.git /opt/agent-workbench
+sudo chown -R agentworkbench:agentworkbench /opt/agent-workbench
+
+sudo -u agentworkbench python3 -m venv /opt/agent-workbench/.venv
+sudo -u agentworkbench /opt/agent-workbench/.venv/bin/python \
+  -m pip install --upgrade pip
+sudo -u agentworkbench /opt/agent-workbench/.venv/bin/python \
+  -m pip install -r /opt/agent-workbench/requirements.txt
+```
+
+### 3.4 Configure the environment
+
+```bash
+sudo -u agentworkbench cp \
+  /opt/agent-workbench/.env.example /opt/agent-workbench/.env
+sudo -u agentworkbench nano /opt/agent-workbench/.env
+```
+
+For a local-only service, keep or set these values:
+
+```env
+HOST=127.0.0.1
+PORT=8000
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen2.5:3b
+OLLAMA_EMBED_MODEL=nomic-embed-text
+RAG_BACKEND=chroma
+CHROMA_PERSIST_DIRECTORY=/opt/agent-workbench/data/chroma
+CODING_WORKSPACE_ROOT=/opt/agent-workbench
+```
+
+Create the writable data directory before starting systemd:
+
+```bash
+sudo install -d -o agentworkbench -g agentworkbench \
+  /opt/agent-workbench/data
+```
+
+### 3.5 Run with systemd
+
+Create `/etc/systemd/system/agent-workbench.service`:
+
+```ini
+[Unit]
+Description=Agent Workbench API
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=agentworkbench
+Group=agentworkbench
+WorkingDirectory=/opt/agent-workbench
+EnvironmentFile=/opt/agent-workbench/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/agent-workbench/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now agent-workbench
+sudo systemctl status agent-workbench
+```
+
+### 3.6 Verify and operate
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:8000/agents
+curl -fsS http://127.0.0.1:8000/health/ready
+sudo journalctl -u agent-workbench -f
+```
+
+`/health/ready` requires both configured Ollama models to be available. For a
+reverse-proxy deployment, put Nginx or Caddy in front of `127.0.0.1:8000` and
+terminate TLS there; keep the application and Ollama ports private.
+
+To update an existing installation:
+
+```bash
+sudo -u agentworkbench git -C /opt/agent-workbench pull --ff-only
+sudo -u agentworkbench /opt/agent-workbench/.venv/bin/python \
+  -m pip install -r /opt/agent-workbench/requirements.txt
+sudo systemctl restart agent-workbench
+```
+
+Back up `/opt/agent-workbench/data/` when using persistent RAG data.
+
+## 4. Run API
 
 ```powershell
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -42,7 +208,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 Open docs: `http://127.0.0.1:8000/docs`
 Open web UI: `http://127.0.0.1:8000`
 
-## 3.1 Agent Orchestrator
+## 4.1 Agent Orchestrator
 
 The project exposes a centralized orchestrator while keeping the original
 `/translate` endpoint backward-compatible:
@@ -97,7 +263,7 @@ independent.
 The initial state store is in memory. It is intentionally behind `TaskStateStore`
 so a later release can use SQLite or PostgreSQL for resumable execution.
 
-## 4. Test Translation
+## 5. Test Translation
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/translate" `
@@ -158,7 +324,7 @@ Function-calling controls:
 - Whitelisted tools only (`FUNCTION_CALL_ALLOWED_TOOLS`).
 - Hard limits for rounds and tool calls (`FUNCTION_CALL_MAX_ROUNDS`, `FUNCTION_CALL_MAX_TOOL_CALLS`).
 
-## 5. Session APIs
+## 6. Session APIs
 
 - `GET /sessions/{session_id}`: check memory turn count
 - `DELETE /sessions/{session_id}`: clear session memory
@@ -168,7 +334,7 @@ Health APIs:
 - `GET /health`: basic liveness
 - `GET /health/ready`: readiness check for `OLLAMA_MODEL` and `OLLAMA_EMBED_MODEL`
 
-## 6. RAG APIs
+## 7. RAG APIs
 
 - `POST /rag/documents`: ingest one document into local persistent vector store
 - `POST /rag/documents/upload`: upload a text file and ingest into vector store
@@ -214,7 +380,7 @@ curl "http://127.0.0.1:8000/rag/documents?knowledge_base_id=project-alpha&source
 
 Web UI now supports selecting a local file and clicking `上传并入库`.
 
-## 7. Config
+## 8. Config
 
 Edit `.env`:
 
@@ -251,7 +417,7 @@ Persistence notes:
 - `chroma` backend persists vectors in `CHROMA_PERSIST_DIRECTORY`.
 - `local_json` backend persists data in `RAG_STORE_PATH`.
 
-## 8. Chroma Quick Start
+## 9. Chroma Quick Start
 
 1. Keep `.env` values:
 
