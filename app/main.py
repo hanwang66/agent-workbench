@@ -7,11 +7,26 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 from pathlib import Path
 
+from .agents import (
+    AgentNotFoundError,
+    AgentRegistry,
+    AgentTask,
+    CodingAgent,
+    OrchestrationResult,
+    Orchestrator,
+    TaskStateStore,
+    TranslationAgent,
+)
 from .config import settings
 from .errors import ApiError
 from .ollama_client import OllamaClient
 from .schemas import (
     ClearSessionResponse,
+    AgentInfoResponse,
+    AgentRunRequest,
+    AgentRunResponse,
+    AgentStepResponse,
+    AgentTaskStatusResponse,
     ErrorResponse,
     HealthResponse,
     ReadinessResponse,
@@ -61,6 +76,20 @@ translation_service = TranslationService(
     function_call_max_tool_calls=settings.function_call_max_tool_calls,
     function_call_allowed_tools=settings.function_call_allowed_tools,
 )
+translation_agent = TranslationAgent(translation_service, model=settings.ollama_model)
+coding_agent = CodingAgent(
+    client=ollama_client,
+    workspace_root=settings.coding_workspace_root,
+    max_rounds=settings.coding_max_rounds,
+    max_tool_calls=settings.coding_max_tool_calls,
+    max_file_bytes=settings.coding_max_file_bytes,
+    command_timeout_seconds=settings.coding_command_timeout_seconds,
+)
+agent_registry = AgentRegistry()
+agent_registry.register(translation_agent)
+agent_registry.register(coding_agent)
+task_state_store = TaskStateStore(max_tasks=settings.max_sessions)
+orchestrator = Orchestrator(agent_registry, state_store=task_state_store)
 
 
 def decode_uploaded_text(raw_bytes: bytes) -> str:
@@ -191,23 +220,117 @@ async def readiness() -> ReadinessResponse:
     )
 
 
+@app.get("/agents", response_model=list[AgentInfoResponse])
+async def list_agents() -> list[AgentInfoResponse]:
+    return [
+        AgentInfoResponse(
+            name=agent.name,
+            description=agent.description,
+            capabilities=list(agent.capabilities),
+        )
+        for agent in agent_registry.list_agents()
+    ]
+
+
+@app.get("/agent/tasks/{task_id}", response_model=AgentTaskStatusResponse)
+async def get_agent_task(task_id: str) -> AgentTaskStatusResponse:
+    state = task_state_store.get(task_id)
+    if state is None:
+        raise ApiError(status_code=404, code="TASK_NOT_FOUND", message=f"Task '{task_id}' was not found")
+    return AgentTaskStatusResponse(
+        task_id=state.task_id,
+        status=state.status,
+        agent_type=state.agent_type,
+        routing_reason=state.routing_reason,
+        current_agent=state.current_agent,
+        output=state.output,
+        steps=[
+            AgentStepResponse(
+                agent_name=step.agent_name,
+                status=step.status,
+                output=step.output,
+                metadata=step.metadata,
+                artifacts=step.artifacts,
+                tool_traces=step.tool_traces,
+                error=step.error,
+            )
+            for step in state.steps
+        ],
+        error=state.error,
+        created_at=state.created_at,
+        updated_at=state.updated_at,
+    )
+
+
+def task_from_agent_request(request: AgentRunRequest) -> AgentTask:
+    return AgentTask(
+        input_text=request.task,
+        agent_type=request.agent_type,
+        session_id=request.session_id,
+        knowledge_base_id=request.knowledge_base_id,
+        parameters=request.parameters,
+    )
+
+
+def agent_run_response(result: OrchestrationResult) -> AgentRunResponse:
+    # Keep the conversion here so future workers can return richer internal
+    # results without exposing their implementation classes through FastAPI.
+    steps = [
+        AgentStepResponse(
+            agent_name=step.agent_name,
+            status=step.status,
+            output=step.output,
+            metadata=step.metadata,
+            artifacts=step.artifacts,
+            tool_traces=step.tool_traces,
+            error=step.error,
+        )
+        for step in result.steps
+    ]
+    return AgentRunResponse(
+        task_id=result.task_id,
+        agent_type=result.agent_type,
+        status=result.status,
+        output=result.output,
+        routing_reason=result.routing_reason,
+        steps=steps,
+        metadata=result.metadata,
+        error=result.error,
+    )
+
+
+@app.post("/agent/run", response_model=AgentRunResponse)
+async def run_agent(request: AgentRunRequest) -> AgentRunResponse:
+    try:
+        result = await orchestrator.run(task_from_agent_request(request))
+    except AgentNotFoundError as exc:
+        raise ApiError(status_code=404, code="AGENT_NOT_FOUND", message=str(exc)) from exc
+    except httpx.TimeoutException as exc:
+        raise ApiError(status_code=504, code="OLLAMA_TIMEOUT", message=f"Agent request timed out: {exc}") from exc
+    except httpx.HTTPStatusError as exc:
+        detail = f"Ollama returned HTTP {exc.response.status_code}: {exc.response.text}"
+        raise ApiError(status_code=502, code="OLLAMA_HTTP_ERROR", message=detail) from exc
+    except httpx.HTTPError as exc:
+        raise ApiError(status_code=502, code="OLLAMA_UNREACHABLE", message=f"Cannot reach Ollama: {exc}") from exc
+    except ValueError as exc:
+        raise ApiError(status_code=400, code="AGENT_INVALID_INPUT", message=str(exc)) from exc
+    except Exception as exc:
+        raise ApiError(status_code=500, code="AGENT_RUN_FAILED", message=f"Agent run failed: {exc}") from exc
+
+    return agent_run_response(result)
+
+
 @app.post("/translate", response_model=TranslateResponse)
 async def translate(request: TranslateRequest) -> TranslateResponse:
     try:
-        translated, session_id, memory_turns, rag_used, rag_chunks, tool_traces = await translation_service.translate(
-            text=request.text,
-            source_lang=request.source_lang,
-            target_lang=request.target_lang,
-            style=request.style,
-            domain=request.domain,
-            glossary=request.glossary,
-            use_rag=request.use_rag,
-            use_function_calling=request.use_function_calling,
-            rag_top_k=request.rag_top_k,
-            retrieval_mode=request.retrieval_mode,
-            rag_filter=request.rag_filter.model_dump(exclude_none=True) if request.rag_filter else None,
-            knowledge_base_id=request.knowledge_base_id,
-            session_id=request.session_id,
+        result = await orchestrator.run(
+            AgentTask(
+                input_text=request.text,
+                agent_type="translation",
+                session_id=request.session_id,
+                knowledge_base_id=request.knowledge_base_id,
+                parameters=request.model_dump(exclude={"text", "session_id", "knowledge_base_id"}),
+            )
         )
     except httpx.TimeoutException as exc:
         raise ApiError(status_code=504, code="OLLAMA_TIMEOUT", message=f"Ollama request timed out: {exc}") from exc
@@ -219,16 +342,17 @@ async def translate(request: TranslateRequest) -> TranslateResponse:
     except Exception as exc:
         raise ApiError(status_code=500, code="TRANSLATION_FAILED", message=f"Translation failed: {exc}") from exc
 
+    metadata = result.metadata
     return TranslateResponse(
-        translated_text=translated,
-        model=settings.ollama_model,
-        source_lang=request.source_lang,
-        target_lang=request.target_lang,
-        session_id=session_id,
-        memory_turns=memory_turns,
-        rag_used=rag_used,
-        rag_chunks=rag_chunks,
-        tool_traces=tool_traces,
+        translated_text=result.output,
+        model=str(metadata.get("model", settings.ollama_model)),
+        source_lang=str(metadata.get("source_lang", request.source_lang)),
+        target_lang=str(metadata.get("target_lang", request.target_lang)),
+        session_id=str(metadata.get("session_id", request.session_id or "")),
+        memory_turns=int(metadata.get("memory_turns", 0)),
+        rag_used=bool(metadata.get("rag_used", False)),
+        rag_chunks=[str(item) for item in metadata.get("rag_chunks", [])],
+        tool_traces=result.steps[0].tool_traces if result.steps else [],
     )
 
 

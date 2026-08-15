@@ -1,4 +1,4 @@
-from typing import Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,54 @@ class TranslateResponse(BaseModel):
     rag_used: bool
     rag_chunks: list[str]
     tool_traces: list[ToolTrace] = Field(default_factory=list)
+
+
+class AgentRunRequest(BaseModel):
+    task: str = Field(..., min_length=1, description="User task for the orchestrator")
+    agent_type: Optional[str] = Field(default=None, description="Optional worker name, e.g. translation or coding")
+    session_id: Optional[str] = Field(default=None, description="Session ID shared with the selected worker")
+    knowledge_base_id: str = Field(default="default", description="Knowledge base/project isolation ID")
+    parameters: dict[str, Any] = Field(default_factory=dict, description="Worker-specific parameters")
+
+
+class AgentStepResponse(BaseModel):
+    agent_name: str
+    status: Literal["completed", "failed", "waiting_approval"]
+    output: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    tool_traces: list[dict[str, Any]] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class AgentRunResponse(BaseModel):
+    task_id: str
+    agent_type: str
+    status: Literal["completed", "failed", "waiting_approval"]
+    output: str
+    routing_reason: str
+    steps: list[AgentStepResponse] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    error: Optional[str] = None
+
+
+class AgentTaskStatusResponse(BaseModel):
+    task_id: str
+    status: Literal["queued", "running", "completed", "failed", "waiting_approval"]
+    agent_type: str
+    routing_reason: str
+    current_agent: Optional[str] = None
+    output: str = ""
+    steps: list[AgentStepResponse] = Field(default_factory=list)
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class AgentInfoResponse(BaseModel):
+    name: str
+    description: str
+    capabilities: list[str]
 
 
 class HealthResponse(BaseModel):

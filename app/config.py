@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     function_call_max_rounds: int = 4
     function_call_max_tool_calls: int = 4
     function_call_allowed_tools: str = "get_rag_context"
+    coding_workspace_root: str = "."
+    coding_max_rounds: int = 6
+    coding_max_tool_calls: int = 12
+    coding_max_file_bytes: int = 128 * 1024
+    coding_command_timeout_seconds: int = 30
 
     max_upload_size_bytes: int = 2 * 1024 * 1024
     upload_allowed_extensions: str = ".txt,.md,.csv,.log"
