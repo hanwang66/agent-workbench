@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     coding_max_tool_calls: int = 12
     coding_max_file_bytes: int = 128 * 1024
     coding_command_timeout_seconds: int = 30
+    coding_sandbox_enabled: bool = True
+    coding_sandbox_image: str = "agent-workbench-sandbox:py312"
+    coding_sandbox_docker_binary: str = "docker"
+    coding_sandbox_cpus: float = 1.0
+    coding_sandbox_memory: str = "512m"
+    coding_sandbox_pids_limit: int = 128
+    coding_sandbox_output_bytes: int = 64 * 1024
+    coding_sandbox_tmpfs_size: str = "64m"
 
     max_upload_size_bytes: int = 2 * 1024 * 1024
     upload_allowed_extensions: str = ".txt,.md,.csv,.log"
