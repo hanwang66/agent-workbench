@@ -14,6 +14,8 @@ from .agents import (
     CodingAgent,
     OrchestrationResult,
     Orchestrator,
+    SandboxExecutor,
+    SandboxPolicy,
     TaskStateStore,
     TranslationAgent,
 )
@@ -84,6 +86,19 @@ coding_agent = CodingAgent(
     max_tool_calls=settings.coding_max_tool_calls,
     max_file_bytes=settings.coding_max_file_bytes,
     command_timeout_seconds=settings.coding_command_timeout_seconds,
+    sandbox=SandboxExecutor(
+        policy=SandboxPolicy(
+            image=settings.coding_sandbox_image,
+            docker_binary=settings.coding_sandbox_docker_binary,
+            enabled=settings.coding_sandbox_enabled,
+            cpus=settings.coding_sandbox_cpus,
+            memory=settings.coding_sandbox_memory,
+            pids_limit=settings.coding_sandbox_pids_limit,
+            output_limit_bytes=settings.coding_sandbox_output_bytes,
+            tmpfs_size=settings.coding_sandbox_tmpfs_size,
+        ),
+        timeout_seconds=settings.coding_command_timeout_seconds,
+    ),
 )
 agent_registry = AgentRegistry()
 agent_registry.register(translation_agent)

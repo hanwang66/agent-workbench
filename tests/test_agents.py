@@ -5,7 +5,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.agents import AgentContext, AgentRegistry, AgentResult, AgentTask, CodingAgent, Orchestrator
+from app.agents import (
+    AgentContext,
+    AgentRegistry,
+    AgentResult,
+    AgentTask,
+    CodingAgent,
+    Orchestrator,
+    SandboxExecutor,
+    SandboxPolicy,
+)
 
 
 class EchoAgent:
@@ -47,6 +56,37 @@ class InspectingClient:
                 ],
             }
         return {"content": "The file prints hello."}
+
+
+class SandboxClient:
+    def __init__(self, tool_name: str, arguments: str) -> None:
+        self.calls = 0
+        self.tool_name = tool_name
+        self.arguments = arguments
+
+    async def chat(self, messages: list[dict[str, object]], tools: list[dict[str, object]] | None = None) -> dict[str, object]:
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "content": "",
+                "tool_calls": [{"function": {"name": self.tool_name, "arguments": self.arguments}}],
+            }
+        return {"content": "Sandbox result recorded."}
+
+
+class RecordingSandbox:
+    def __init__(self) -> None:
+        self.calls: list[tuple[Path, list[str], bool]] = []
+
+    async def run(self, workspace: Path, command: list[str], *, writable: bool = False) -> dict[str, object]:
+        self.calls.append((workspace, command, writable))
+        return {
+            "command": command,
+            "returncode": 0,
+            "stdout": "ok",
+            "stderr": "",
+            "sandboxed": True,
+        }
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -104,6 +144,63 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(result.output, "The file prints hello.")
             self.assertEqual(result.tool_traces[0]["tool_name"], "read_file")
             self.assertTrue(all(item["function"]["name"] != "write_file" for item in client.tools_seen))
+
+    def test_sandbox_builds_restricted_docker_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            executor = SandboxExecutor(
+                policy=SandboxPolicy(image="sandbox:test", docker_binary="docker"),
+            )
+            command = executor.build_command(Path(tmp), ["python", "-m", "unittest"])
+
+            self.assertIn("--network=none", command)
+            self.assertIn("--read-only", command)
+            self.assertIn("--cap-drop=ALL", command)
+            self.assertIn("--security-opt", command)
+            self.assertIn("no-new-privileges=true", command)
+            self.assertIn("--memory-swap", command)
+            self.assertEqual(command[-4:], ["sandbox:test", "python", "-m", "unittest"])
+
+    def test_coding_agent_routes_validation_to_sandbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = RecordingSandbox()
+            client = SandboxClient("run_tests", '{"suite":"python_unittest"}')
+            agent = CodingAgent(client=client, workspace_root=tmp, sandbox=sandbox)  # type: ignore[arg-type]
+
+            result = asyncio.run(
+                agent.run(
+                    AgentTask(input_text="Run the tests", agent_type="coding"),
+                    AgentContext(task=AgentTask(input_text="Run the tests", agent_type="coding")),
+                )
+            )
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(len(sandbox.calls), 1)
+            self.assertEqual(sandbox.calls[0][1], ["python", "-m", "unittest", "discover", "-s", "tests", "-v"])
+            self.assertFalse(sandbox.calls[0][2])
+
+    def test_approved_writes_are_isolated_and_return_a_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "hello.py"
+            source.write_text("print('hello')\n", encoding="utf-8")
+            client = SandboxClient("write_file", "{\"path\":\"hello.py\",\"content\":\"print('changed')\\n\"}")
+            agent = CodingAgent(client=client, workspace_root=tmp, sandbox=RecordingSandbox())  # type: ignore[arg-type]
+
+            result = asyncio.run(
+                agent.run(
+                    AgentTask(
+                        input_text="Update hello.py",
+                        agent_type="coding",
+                        parameters={"write_approved": True},
+                    ),
+                    AgentContext(task=AgentTask(input_text="Update hello.py", agent_type="coding")),
+                )
+            )
+
+            self.assertEqual(result.status, "waiting_approval")
+            self.assertEqual(source.read_text(encoding="utf-8"), "print('hello')\n")
+            self.assertTrue(result.metadata["changes_proposed"])
+            self.assertFalse(result.metadata["changes_applied"])
+            self.assertIn("print('changed')", result.artifacts[0]["content"])
 
     def test_orchestrator_executes_explicit_multi_step_plan(self) -> None:
         registry = AgentRegistry()

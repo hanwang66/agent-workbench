@@ -4,6 +4,7 @@ from .base import Agent, AgentContext, AgentResult, AgentTask
 from .coding import CodingAgent
 from .orchestrator import OrchestrationResult, Orchestrator
 from .registry import AgentNotFoundError, AgentRegistry
+from .sandbox import SandboxExecutor, SandboxPolicy
 from .state import TaskState, TaskStateStore
 from .translation import TranslationAgent
 
@@ -17,6 +18,8 @@ __all__ = [
     "AgentTask",
     "OrchestrationResult",
     "Orchestrator",
+    "SandboxExecutor",
+    "SandboxPolicy",
     "TranslationAgent",
     "TaskState",
     "TaskStateStore",

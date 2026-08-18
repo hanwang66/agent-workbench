@@ -43,7 +43,9 @@ flowchart LR
     Ollama --> Models[Ollama models]
 
     Coding --> Tools[Bounded repository tools]
-    Tools --> Workspace[Configured workspace]
+    Tools --> Sandbox[SandboxExecutor]
+    Sandbox --> Container[Ephemeral Docker container]
+    Tools --> Workspace[Configured workspace / temp copy]
 ```
 
 ## 1. Prerequisites
@@ -76,7 +78,8 @@ environment, local Ollama, and systemd.
 
 ```bash
 sudo apt update
-sudo apt install -y git curl python3 python3-venv python3-pip
+sudo apt install -y git curl python3 python3-venv python3-pip docker.io
+sudo systemctl enable --now docker
 ```
 
 ### 3.2 Install and prepare Ollama
@@ -109,7 +112,16 @@ sudo -u agentworkbench /opt/agent-workbench/.venv/bin/python \
   -m pip install --upgrade pip
 sudo -u agentworkbench /opt/agent-workbench/.venv/bin/python \
   -m pip install -r /opt/agent-workbench/requirements.txt
+
+sudo docker build -f /opt/agent-workbench/Dockerfile.sandbox \
+  -t agent-workbench-sandbox:py312 /opt/agent-workbench
 ```
+
+The systemd service user must be able to invoke the Docker daemon. For a
+trusted single-host installation this can be configured with `sudo usermod -aG
+docker agentworkbench`, followed by a service restart. Membership in the
+`docker` group grants broad control over the Docker daemon; use a separate
+rootless runner service instead for untrusted or multi-tenant workloads.
 
 ### 3.4 Configure the environment
 
@@ -146,7 +158,7 @@ Create `/etc/systemd/system/agent-workbench.service`:
 ```ini
 [Unit]
 Description=Agent Workbench API
-After=network-online.target ollama.service
+After=network-online.target ollama.service docker.service
 Wants=network-online.target
 
 [Service]
@@ -220,9 +232,22 @@ The project exposes a centralized orchestrator while keeping the original
 
 The built-in `CodingAgent` is read-only by default. It can list and search
 files, read text, inspect `git diff`, and run the fixed unittest/diff checks.
-File writes are exposed only when the caller explicitly supplies
-`parameters.write_approved=true`; the workspace is constrained by
-`CODING_WORKSPACE_ROOT`.
+Validation commands run in an ephemeral Docker sandbox with no network,
+read-only root filesystem, dropped capabilities, a non-root UID, and CPU,
+memory, process, timeout, and output limits. Build the sandbox image before
+using `run_tests` or `get_git_diff`:
+
+```bash
+docker build -f Dockerfile.sandbox -t agent-workbench-sandbox:py312 .
+```
+
+All CodingAgent tools operate on a sanitized temporary snapshot. Host virtual
+environments, runtime data, environment files, SSH material, private-key
+files, and Git credentials are excluded from that snapshot. When
+`parameters.write_approved=true`, `write_file` is exposed only inside the
+temporary copy. The real repository is never modified; completed changes are
+returned as an unapplied unified-diff artifact and the task enters
+`waiting_approval` for a separate approval/apply workflow.
 
 Example:
 
@@ -408,6 +433,14 @@ Edit `.env`:
 - `FUNCTION_CALL_MAX_ROUNDS` default `4`
 - `FUNCTION_CALL_MAX_TOOL_CALLS` default `4`
 - `FUNCTION_CALL_ALLOWED_TOOLS` default `get_rag_context`
+- `CODING_SANDBOX_ENABLED` default `true`; set `false` only for trusted local development
+- `CODING_SANDBOX_IMAGE` default `agent-workbench-sandbox:py312`
+- `CODING_SANDBOX_DOCKER_BINARY` default `docker`
+- `CODING_SANDBOX_CPUS` default `1.0`
+- `CODING_SANDBOX_MEMORY` default `512m`
+- `CODING_SANDBOX_PIDS_LIMIT` default `128`
+- `CODING_SANDBOX_OUTPUT_BYTES` default `65536`
+- `CODING_SANDBOX_TMPFS_SIZE` default `64m`
 - `MAX_UPLOAD_SIZE_BYTES` default `2097152` (2MB)
 - `UPLOAD_ALLOWED_EXTENSIONS` default `.txt,.md,.csv,.log`
 - `HOST` and `PORT` for your API runtime settings
@@ -416,6 +449,15 @@ Persistence notes:
 
 - `chroma` backend persists vectors in `CHROMA_PERSIST_DIRECTORY`.
 - `local_json` backend persists data in `RAG_STORE_PATH`.
+
+Sandbox notes:
+
+- The Docker daemon and image are deployment prerequisites for the default
+  CodingAgent configuration.
+- Do not mount `/var/run/docker.sock` into the API container or allow callers
+  to provide arbitrary Docker flags, images, mounts, or commands.
+- For untrusted multi-tenant workloads, run the sandbox executor as a separate
+  rootless worker service and consider a stronger VM-backed isolation boundary.
 
 ## 9. Chroma Quick Start
 
