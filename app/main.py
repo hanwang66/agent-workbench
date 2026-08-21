@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import httpx
 from pathlib import Path
+from time import perf_counter
 
 from .agents import (
     AgentNotFoundError,
@@ -16,11 +17,13 @@ from .agents import (
     Orchestrator,
     SandboxExecutor,
     SandboxPolicy,
+    SQLiteTaskStateStore,
     TaskStateStore,
     TranslationAgent,
 )
 from .config import settings
 from .errors import ApiError
+from .metrics import MetricsCollector
 from .ollama_client import OllamaClient
 from .schemas import (
     ClearSessionResponse,
@@ -45,6 +48,21 @@ from .schemas import (
 from .service import TranslationService
 
 app = FastAPI(title="Agent Workbench", version="0.1.0")
+metrics = MetricsCollector()
+
+
+@app.middleware("http")
+async def collect_http_metrics(request: Request, call_next):
+    started = perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        route = request.scope.get("route")
+        path = getattr(route, "path", request.url.path)
+        metrics.observe_http(request.method, path, status_code, perf_counter() - started)
 
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -103,7 +121,13 @@ coding_agent = CodingAgent(
 agent_registry = AgentRegistry()
 agent_registry.register(translation_agent)
 agent_registry.register(coding_agent)
-task_state_store = TaskStateStore(max_tasks=settings.max_sessions)
+if settings.task_state_backend.lower() == "sqlite":
+    task_state_store = SQLiteTaskStateStore(
+        db_path=settings.task_state_db_path,
+        max_tasks=settings.max_task_states,
+    )
+else:
+    task_state_store = TaskStateStore(max_tasks=settings.max_task_states)
 orchestrator = Orchestrator(agent_registry, state_store=task_state_store)
 
 
@@ -202,6 +226,11 @@ async def health() -> HealthResponse:
         ollama_base_url=settings.ollama_base_url,
         model=settings.ollama_model,
     )
+
+
+@app.get("/metrics", response_class=PlainTextResponse, include_in_schema=False)
+async def metrics_endpoint() -> PlainTextResponse:
+    return PlainTextResponse(metrics.render_prometheus())
 
 
 @app.get("/health/ready", response_model=ReadinessResponse, responses={503: {"model": ErrorResponse}})

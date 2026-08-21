@@ -5,7 +5,7 @@ from .coding import CodingAgent
 from .orchestrator import OrchestrationResult, Orchestrator
 from .registry import AgentNotFoundError, AgentRegistry
 from .sandbox import SandboxExecutor, SandboxPolicy
-from .state import TaskState, TaskStateStore
+from .state import SQLiteTaskStateStore, TaskState, TaskStateStore
 from .translation import TranslationAgent
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "Orchestrator",
     "SandboxExecutor",
     "SandboxPolicy",
+    "SQLiteTaskStateStore",
     "TranslationAgent",
     "TaskState",
     "TaskStateStore",
