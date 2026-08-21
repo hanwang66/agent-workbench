@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.rag import RagChunk, chunk_matches_filters, normalize_tags, split_text
 from app.schemas import TranslateRequest
 from app.service import TranslationTurn, TranslationService, build_translation_prompt
+from app.metrics import MetricsCollector
 
 
 class FakeClient:
@@ -107,6 +108,16 @@ class FakeRagStore:
 
 
 class CoreTests(unittest.TestCase):
+    def test_metrics_render_prometheus(self) -> None:
+        metrics = MetricsCollector()
+        metrics.observe_http("get", "/health", 200, 0.125)
+        metrics.observe_http("get", "/health", 200, 0.075)
+
+        output = metrics.render_prometheus()
+        self.assertIn("agent_workbench_http_requests_total", output)
+        self.assertIn('method="GET",path="/health",status="200"} 2', output)
+        self.assertIn('agent_workbench_http_request_duration_seconds_count{method="GET",path="/health"} 2', output)
+
     def test_split_text_with_overlap(self) -> None:
         text = "abcdefghij"
         chunks = split_text(text=text, chunk_size=4, overlap=1)

@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     coding_sandbox_output_bytes: int = 64 * 1024
     coding_sandbox_tmpfs_size: str = "64m"
 
+    task_state_backend: str = "sqlite"
+    task_state_db_path: str = "data/tasks.sqlite3"
+    max_task_states: int = 10000
+
     max_upload_size_bytes: int = 2 * 1024 * 1024
     upload_allowed_extensions: str = ".txt,.md,.csv,.log"
 

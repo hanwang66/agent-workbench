@@ -227,8 +227,9 @@ The project exposes a centralized orchestrator while keeping the original
 
 - `GET /agents`: list registered worker agents and capabilities.
 - `POST /agent/run`: route a task to a registered worker.
-- `GET /agent/tasks/{task_id}`: inspect the in-memory orchestration state.
+- `GET /agent/tasks/{task_id}`: inspect persisted orchestration state.
 - `POST /translate`: compatibility endpoint backed by `TranslationAgent`.
+- `GET /metrics`: expose Prometheus-compatible HTTP request counters and duration summaries.
 
 The built-in `CodingAgent` is read-only by default. It can list and search
 files, read text, inspect `git diff`, and run the fixed unittest/diff checks.
@@ -285,8 +286,10 @@ When a later step is a `TranslationAgent`, preceding worker output is included
 by default. Set `include_previous_results` to `false` on that step to keep it
 independent.
 
-The initial state store is in memory. It is intentionally behind `TaskStateStore`
-so a later release can use SQLite or PostgreSQL for resumable execution.
+Task state is persisted to SQLite by default, so task status and completed
+worker steps survive an API restart. Set `TASK_STATE_BACKEND=memory` for an
+ephemeral development run. The store boundary leaves room for PostgreSQL when
+multiple API workers need shared state.
 
 ## 5. Test Translation
 
@@ -441,6 +444,9 @@ Edit `.env`:
 - `CODING_SANDBOX_PIDS_LIMIT` default `128`
 - `CODING_SANDBOX_OUTPUT_BYTES` default `65536`
 - `CODING_SANDBOX_TMPFS_SIZE` default `64m`
+- `TASK_STATE_BACKEND` default `sqlite` (`sqlite` or `memory`)
+- `TASK_STATE_DB_PATH` default `data/tasks.sqlite3`
+- `MAX_TASK_STATES` default `10000` (maximum persisted orchestration tasks)
 - `MAX_UPLOAD_SIZE_BYTES` default `2097152` (2MB)
 - `UPLOAD_ALLOWED_EXTENSIONS` default `.txt,.md,.csv,.log`
 - `HOST` and `PORT` for your API runtime settings
@@ -449,6 +455,14 @@ Persistence notes:
 
 - `chroma` backend persists vectors in `CHROMA_PERSIST_DIRECTORY`.
 - `local_json` backend persists data in `RAG_STORE_PATH`.
+- SQLite task history persists in `TASK_STATE_DB_PATH` and is bounded by `MAX_TASK_STATES`.
+
+Metrics notes:
+
+- `/metrics` uses the Prometheus text format and tracks request count by method,
+  route and status code, plus total request duration and count.
+- The collector is intentionally dependency-free; it can later be replaced by
+  a full Prometheus client without changing the API surface.
 
 Sandbox notes:
 

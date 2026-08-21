@@ -14,6 +14,7 @@ from app.agents import (
     Orchestrator,
     SandboxExecutor,
     SandboxPolicy,
+    SQLiteTaskStateStore,
 )
 
 
@@ -90,6 +91,39 @@ class RecordingSandbox:
 
 
 class AgentRuntimeTests(unittest.TestCase):
+    def test_sqlite_task_state_survives_store_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            task = AgentTask(input_text="persist me", agent_type="echo")
+            first_store = SQLiteTaskStateStore(Path(tmp) / "tasks.sqlite3", max_tasks=2)
+            first_store.create(task)
+            first_store.update(
+                task.task_id,
+                status="completed",
+                agent_type="echo",
+                output="saved",
+                steps=[AgentResult(agent_name="echo", status="completed", output="saved")],
+            )
+            first_store.close()
+
+            second_store = SQLiteTaskStateStore(Path(tmp) / "tasks.sqlite3", max_tasks=2)
+            restored = second_store.get(task.task_id)
+            self.assertIsNotNone(restored)
+            assert restored is not None
+            self.assertEqual(restored.status, "completed")
+            self.assertEqual(restored.steps[0].output, "saved")
+            second_store.close()
+
+    def test_sqlite_task_state_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SQLiteTaskStateStore(Path(tmp) / "tasks.sqlite3", max_tasks=1)
+            first = AgentTask(input_text="first")
+            second = AgentTask(input_text="second")
+            store.create(first)
+            store.create(second)
+            self.assertIsNone(store.get(first.task_id))
+            self.assertEqual([item.task_id for item in store.list()], [second.task_id])
+            store.close()
+
     def test_registry_exposes_registered_agent(self) -> None:
         registry = AgentRegistry()
         registry.register(EchoAgent())

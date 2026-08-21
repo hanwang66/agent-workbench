@@ -1,4 +1,4 @@
-# Translation Agent TODO
+# Agent Workbench TODO
 
 ## 目标
 
@@ -20,7 +20,7 @@
   - [ ] `Milvus`（大规模场景）
 - [x] 增加文档元数据（source、tags、language、created_at）并支持过滤检索。
 - [ ] 增加重排（Rerank）步骤，提高召回后排序质量。
-- [ ] 增加混合检索（关键词 BM25 + 向量检索）以提升术语命中率。
+- [x] 增加混合检索（关键词 BM25 + 向量检索）以提升术语命中率。
 - [x] 支持按知识库/项目隔离（`knowledge_base_id`）。
 - [x] 增加去重策略（文档哈希、重复 chunk 检测）。
 
@@ -41,7 +41,8 @@
 ## P2: 可观测性与评测
 
 - [ ] 增加结构化日志（请求 ID、耗时、命中 chunk、错误分类）。
-- [ ] 增加指标监控（QPS、P95、RAG 命中率、平均 chunk 数）。
+- [x] 增加基础 HTTP 指标监控（请求计数、状态码、耗时汇总）。
+- [ ] 增加业务指标监控（QPS、P95、RAG 命中率、平均 chunk 数）。
 - [ ] 增加离线评测集与评分脚本（BLEU/COMET/术语命中率）。
 - [ ] 增加前端历史数据导出（CSV）与筛选统计。
 
@@ -56,7 +57,8 @@
 
 - [ ] 增加 Dockerfile 与 `docker-compose` 一键部署。
 - [ ] 区分 `dev/staging/prod` 配置。
-- [ ] 增加 CI（lint + test + build）。
+- [x] 增加 CI（Python 编译检查 + 单元测试）。
+- [ ] 增加 lint + build 阶段。
 - [ ] 增加版本化迁移脚本（向量库 schema 升级）。
 
 ## P3: 体验升级
